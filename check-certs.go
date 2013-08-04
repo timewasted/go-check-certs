@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const maxConnections = 4
+
 var (
 	warnYears  = flag.Int("years", 0, "Warn if the certificate will expire within this many years.")
 	warnMonths = flag.Int("months", 0, "Warn if the certificate will expire within this many months.")
@@ -50,34 +52,38 @@ func init() {
 }
 
 func main() {
-	// No need to spawn a Go routine in we're just checking one host.
-	if len(checkHosts) == 1 {
-		checkCert(checkHosts[0], nil)
-		return
+	checkCertChan := make(chan string, maxConnections)
+	defer close(checkCertChan)
+	processingChan := make(chan interface{}, maxConnections+1)
+	defer close(processingChan)
+
+	for i := 0; i < maxConnections; i++ {
+		go processHost(checkCertChan, processingChan)
 	}
 
-	var completed int
-	ch := make(chan int)
 	for _, host := range checkHosts {
-		go checkCert(host, ch)
+		checkCertChan <- host
 	}
+
 	for {
-		completed += <-ch
-		if completed == len(checkHosts) {
+		if len(checkCertChan) == 0 && len(processingChan) == 0 {
 			break
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
-func checkCert(host string, ch chan int) {
-	// Signal when we are done checking this host.
-	defer func() {
-		if ch != nil {
-			ch <- 1
-		}
-	}()
+func processHost(hostChan <-chan string, processing chan interface{}) {
+	for {
+		host := <-hostChan
+		processing <- nil
+		checkCert(host)
+		<-processing
+	}
+}
 
-	// Attempt a connection to the host.
+func checkCert(host string) {
+	// Attempt to connect to the host.
 	conn, err := tls.Dial("tcp", host, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", host, err)
@@ -85,24 +91,26 @@ func checkCert(host string, ch chan int) {
 	}
 	defer conn.Close()
 
-	checkedCert := make(map[string]bool)
 	var expiresIn int64
-	curTime := time.Now()
-	// Check all of the certs in the chain.
+	currentTime := time.Now()
+	checkedCert := make(map[string]interface{})
+
+	// Check all certificates in the chain.
 	for _, chain := range conn.ConnectionState().VerifiedChains {
 		for _, cert := range chain {
-			// Ensure that each unique certificate is checked only once per host.
+			// Only check each certificate once.
 			if _, checked := checkedCert[string(cert.Signature)]; checked {
 				continue
 			}
-			checkedCert[string(cert.Signature)] = true
+			checkedCert[string(cert.Signature)] = nil
 
-			if curTime.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.NotAfter) {
-				expiresIn = int64(cert.NotAfter.Sub(curTime).Hours())
-				if expiresIn < 24 {
-					fmt.Printf("%s: %s expires in %d hours!\n", host, cert.Subject.CommonName, expiresIn)
+			// Check the expiration date.
+			if currentTime.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.NotAfter) {
+				expiresIn = int64(cert.NotAfter.Sub(currentTime).Hours())
+				if expiresIn <= 48 {
+					fmt.Fprintf(os.Stdout, "%s: %s expires in %d hours!\n", host, cert.Subject.CommonName, expiresIn)
 				} else {
-					fmt.Printf("%s: %s expires in roughly %d days.\n", host, cert.Subject.CommonName, expiresIn/24)
+					fmt.Fprintf(os.Stdout, "%s: %s expires in roughly %d days.\n", host, cert.Subject.CommonName, expiresIn/24)
 				}
 			}
 		}

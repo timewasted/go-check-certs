@@ -7,29 +7,41 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"fmt"
-	"os"
+	"io/ioutil"
+	"log"
+	"strings"
+	"sync"
 	"time"
 )
 
-const maxConnections = 4
+const defaultConcurrency = 8
 
 var (
-	warnYears  = flag.Int("years", 0, "Warn if the certificate will expire within this many years.")
-	warnMonths = flag.Int("months", 0, "Warn if the certificate will expire within this many months.")
-	warnDays   = flag.Int("days", 0, "Warn if the certificate will expire within this many days.")
+	hostsFile   = flag.String("hosts", "", "The path to the file containing a list of hosts to check.")
+	warnYears   = flag.Int("years", 0, "Warn if the certificate will expire within this many years.")
+	warnMonths  = flag.Int("months", 0, "Warn if the certificate will expire within this many months.")
+	warnDays    = flag.Int("days", 0, "Warn if the certificate will expire within this many days.")
+	concurrency = flag.Int("concurrency", defaultConcurrency, "Maximum number of hosts to check at once.")
 )
-var checkHosts []string
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s [options] host:port ...\nOptions:\n", os.Args[0])
-	flag.PrintDefaults()
+type certExpiration struct {
+	commonName string
+	expiresAt  time.Time
 }
 
-func init() {
+type hostResult struct {
+	host  string
+	err   error
+	certs []certExpiration
+}
+
+func main() {
 	flag.Parse()
 
-	// Sanity check the warning thresholds.
+	if len(*hostsFile) == 0 {
+		flag.Usage()
+		return
+	}
 	if *warnYears < 0 {
 		*warnYears = 0
 	}
@@ -42,77 +54,111 @@ func init() {
 	if *warnYears == 0 && *warnMonths == 0 && *warnDays == 0 {
 		*warnDays = 30
 	}
-
-	// Anything that's not a flag is treated as a host to check.
-	checkHosts = flag.Args()
-	if len(checkHosts) == 0 {
-		printUsage()
-		os.Exit(1)
+	if *concurrency < 0 {
+		*concurrency = defaultConcurrency
 	}
+
+	processHosts()
 }
 
-func main() {
-	checkCertChan := make(chan string, maxConnections)
-	defer close(checkCertChan)
-	processingChan := make(chan interface{}, maxConnections+1)
-	defer close(processingChan)
+func processHosts() {
+	done := make(chan struct{})
+	defer close(done)
 
-	for i := 0; i < maxConnections; i++ {
-		go processHost(checkCertChan, processingChan)
+	hosts := queueHosts(done)
+	results := make(chan hostResult)
+
+	var wg sync.WaitGroup
+	wg.Add(*concurrency)
+	for i := 0; i < *concurrency; i++ {
+		go func() {
+			processQueue(done, hosts, results)
+			wg.Done()
+		}()
 	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-	for _, host := range checkHosts {
-		checkCertChan <- host
-	}
-
-	for {
-		if len(checkCertChan) == 0 && len(processingChan) == 0 {
-			break
+	timeNow := time.Now()
+	for r := range results {
+		if r.err != nil {
+			log.Printf("%s: %v\n", r.host, r.err)
+			continue
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-func processHost(hostChan <-chan string, processing chan interface{}) {
-	for {
-		host := <-hostChan
-		processing <- nil
-		checkCert(host)
-		<-processing
-	}
-}
-
-func checkCert(host string) {
-	// Attempt to connect to the host.
-	conn, err := tls.Dial("tcp", host, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", host, err)
-		return
-	}
-	defer conn.Close()
-
-	var expiresIn int64
-	currentTime := time.Now()
-	checkedCert := make(map[string]interface{})
-
-	// Check all certificates in the chain.
-	for _, chain := range conn.ConnectionState().VerifiedChains {
-		for _, cert := range chain {
-			// Only check each certificate once.
-			if _, checked := checkedCert[string(cert.Signature)]; checked {
-				continue
-			}
-			checkedCert[string(cert.Signature)] = nil
-
-			// Check the expiration date.
-			if currentTime.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.NotAfter) {
-				expiresIn = int64(cert.NotAfter.Sub(currentTime).Hours())
+		for _, cert := range r.certs {
+			if timeNow.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.expiresAt) {
+				expiresIn := int64(cert.expiresAt.Sub(timeNow).Hours())
 				if expiresIn <= 48 {
-					fmt.Fprintf(os.Stdout, "%s: %s expires in %d hours!\n", host, cert.Subject.CommonName, expiresIn)
+					log.Printf("%s: ** %s expires in %d hours! **\n", r.host, cert.commonName, expiresIn)
 				} else {
-					fmt.Fprintf(os.Stdout, "%s: %s expires in roughly %d days.\n", host, cert.Subject.CommonName, expiresIn/24)
+					log.Printf("%s: %s expires in roughly %d days.\n", r.host, cert.commonName, expiresIn/24)
 				}
 			}
 		}
 	}
+}
+
+func queueHosts(done <-chan struct{}) <-chan string {
+	hosts := make(chan string)
+	go func() {
+		defer close(hosts)
+
+		fileContents, err := ioutil.ReadFile(*hostsFile)
+		if err != nil {
+			return
+		}
+		lines := strings.Split(string(fileContents), "\n")
+		for _, line := range lines {
+			host := strings.TrimSpace(line)
+			if len(host) == 0 || host[0] == '#' {
+				continue
+			}
+			select {
+			case hosts <- host:
+			case <-done:
+				return
+			}
+		}
+	}()
+	return hosts
+}
+
+func processQueue(done <-chan struct{}, hosts <-chan string, results chan<- hostResult) {
+	for host := range hosts {
+		select {
+		case results <- checkHost(host):
+		case <-done:
+			return
+		}
+	}
+}
+
+func checkHost(host string) (result hostResult) {
+	result = hostResult{
+		host: host,
+	}
+	conn, err := tls.Dial("tcp", host, nil)
+	if err != nil {
+		result.err = err
+		return
+	}
+	defer conn.Close()
+
+	checkedCerts := make(map[string]struct{})
+	for _, chain := range conn.ConnectionState().VerifiedChains {
+		for _, cert := range chain {
+			if _, checked := checkedCerts[string(cert.Signature)]; checked {
+				continue
+			}
+			checkedCerts[string(cert.Signature)] = struct{}{}
+			result.certs = append(result.certs, certExpiration{
+				commonName: cert.Subject.CommonName,
+				expiresAt:  cert.NotAfter,
+			})
+		}
+	}
+
+	return
 }

@@ -1,19 +1,18 @@
 go-check-certs
 ==============
 
-This is a simple utility written in Go to check the validity and expiration dates of SSL certificates for a given host.  Each certificate in the host's certificate chain is checked.  By default, it will warn you if a certificate is going to expire within 30 days.  Usage looks something like:
+This is a simple utility written in Go to check the validity and expiration dates of SSL certificates for a list of given hosts. Each certificate in the host's certificate chain is checked. By default, it will warn you if a certificate is going to expire within 30 days. Usage looks something like:
 
 ```
-./go-check-certs -days 60 example.com:443 example.org:443 example.net:443
+./go-check-certs -hosts="./path/to/file/with/hosts"
 ```
 
-You could probably get the same functionality out of a curl one-liner, but really, where's the fun in that?
+The hosts file is simply a single `hostname:port` per line. Empty lines or lines that start with `#` are ignored.
 
 Current limitations:
 --------------------
 
-* This uses the host's root CA set to check the validity of certificates.  This means that it is not able to validate things like self-signed certificates.
-
+* This uses the host's root CA set to check the validity of certificates.  This means that, by default, it is not able to validate things like self-signed certificates.
 * A certificate must be valid for the expiration date to be checked.
 
 License:

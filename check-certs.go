@@ -172,7 +172,15 @@ func processQueue(done <-chan struct{}, hosts <-chan string, results chan<- host
 	}
 }
 
-func checkHost(host string) (result hostResult) {
+func checkHost(host string) hostResult {
+	if len(host) >= 2 && host[0:2] == "i " {
+		return checkUnverfiedHost(host[2:])
+	} else {
+		return checkVerifiedHost(host)
+	}
+}
+
+func checkVerifiedHost(host string) (result hostResult) {
 	result = hostResult{
 		host:  host,
 		certs: []certErrors{},
@@ -184,7 +192,6 @@ func checkHost(host string) (result hostResult) {
 	}
 	defer conn.Close()
 
-	timeNow := time.Now()
 	checkedCerts := make(map[string]struct{})
 	for _, chain := range conn.ConnectionState().VerifiedChains {
 		for certNum, cert := range chain {
@@ -192,31 +199,53 @@ func checkHost(host string) (result hostResult) {
 				continue
 			}
 			checkedCerts[string(cert.Signature)] = struct{}{}
-			cErrs := []error{}
+			result.certs = append(result.certs, checkCert(host, certNum, chain))
+		}
+	}
+	return
+}
 
-			// Check the expiration.
-			if timeNow.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.NotAfter) {
-				expiresIn := int64(cert.NotAfter.Sub(timeNow).Hours())
-				if expiresIn <= 48 {
-					cErrs = append(cErrs, fmt.Errorf(errExpiringShortly, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn))
-				} else {
-					cErrs = append(cErrs, fmt.Errorf(errExpiringSoon, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn/24))
-				}
-			}
+func checkUnverfiedHost(host string) (result hostResult) {
+	result = hostResult{
+		host:  host,
+		certs: []certErrors{},
+	}
+	conn, err := tls.Dial("tcp", host, &tls.Config{InsecureSkipVerify: true})
+	if err != nil {
+		result.err = err
+		return
+	}
+	defer conn.Close()
+	certs := conn.ConnectionState().PeerCertificates
+	for certNum := range certs {
+		result.certs = append(result.certs, checkCert(host, certNum, certs))
+	}
+	return
+}
 
-			// Check the signature algorithm, ignoring the root certificate.
-			if alg, exists := sunsetSigAlgs[cert.SignatureAlgorithm]; *checkSigAlg && exists && certNum != len(chain)-1 {
-				if cert.NotAfter.Equal(alg.sunsetsAt) || cert.NotAfter.After(alg.sunsetsAt) {
-					cErrs = append(cErrs, fmt.Errorf(errSunsetAlg, host, cert.Subject.CommonName, cert.SerialNumber, alg.name))
-				}
-			}
-
-			result.certs = append(result.certs, certErrors{
-				commonName: cert.Subject.CommonName,
-				errs:       cErrs,
-			})
+func checkCert(host string, certNum int, certs []*x509.Certificate) certErrors {
+	cert := certs[certNum]
+	cErrs := []error{}
+	timeNow := time.Now()
+	// Check the expiration.
+	if timeNow.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.NotAfter) {
+		expiresIn := int64(cert.NotAfter.Sub(timeNow).Hours())
+		if expiresIn <= 48 {
+			cErrs = append(cErrs, fmt.Errorf(errExpiringShortly, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn))
+		} else {
+			cErrs = append(cErrs, fmt.Errorf(errExpiringSoon, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn/24))
 		}
 	}
 
-	return
+	// Check the signature algorithm, ignoring the root certificate.
+	if alg, exists := sunsetSigAlgs[cert.SignatureAlgorithm]; *checkSigAlg && exists && certNum != len(certs)-1 {
+		if cert.NotAfter.Equal(alg.sunsetsAt) || cert.NotAfter.After(alg.sunsetsAt) {
+			cErrs = append(cErrs, fmt.Errorf(errSunsetAlg, host, cert.Subject.CommonName, cert.SerialNumber, alg.name))
+		}
+	}
+
+	return certErrors{
+		commonName: cert.Subject.CommonName,
+		errs:       cErrs,
+	}
 }

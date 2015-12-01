@@ -14,10 +14,21 @@ Usage looks something like:
 
 The hosts file is simply a single `hostname:port` per line. Empty lines or lines that start with `#` are ignored.
 
+## Self-signed certificates
+
+go-check-certs is able to validate signature algorithms and expiration dates for self-signed certificates.
+
+Prefix insecure host urls that cannot be verfied against the root CA with "i ".
+
+```
+i https://self-signed.example.com
+```
+
+go-check-certs will skip verifying `self-signed.example.com`'s cert, but will perform the same signing algorithm and expiration checks on all certs in the bundle. Please be warned that this approach is vulnerable to mitm attacks, as the cert is not verfied against the root CA.
+
 Current limitations:
 --------------------
 
-* This uses the host's root CA set to check the validity of certificates.  This means that it is not able to validate things like self-signed certificates.
 * A certificate must be valid for it to be checked.
 
 License:

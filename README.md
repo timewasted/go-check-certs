@@ -20,6 +20,20 @@ Current limitations:
 * This uses the host's root CA set to check the validity of certificates.  This means that it is not able to validate things like self-signed certificates.
 * A certificate must be valid for it to be checked.
 
+Installation
+------------
+
+`go-check-certs` is written in Go, so if you have Go installed (you can do so
+by following [these instructions](golang.org/doc/install.html)) you can
+install it with go get:
+
+```
+    go get github.com/timewasted/go-check-certs
+```
+
+This will download the code, compile it, and leave an `embedmd` binary
+in `$GOPATH/bin`.
+
 License:
 --------
 ```

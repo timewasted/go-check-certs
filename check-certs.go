@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -18,10 +17,11 @@ import (
 
 const defaultConcurrency = 8
 
-const (
-	errExpiringShortly = "%s: ** '%s' (S/N %X) expires in %d hours! **"
-	errExpiringSoon    = "%s: '%s' (S/N %X) expires in roughly %d days."
-	errSunsetAlg       = "%s: '%s' (S/N %X) expires after the sunset date for its signature algorithm '%s'."
+var (
+	columnNames        = "Hostname -- Common Name -- S/N -- Time to expire -- Expiration date"
+	errExpiringShortly = "%s: ** '%s' (S/N %X) expires in %d hours ** at %s!"
+	errExpiringSoon    = "%s: '%s' (S/N %X) expires in roughly %d days on %s"
+	errSunsetAlg       = "%s: '%s' (S/N %X) expires after the sunset date for its signature algorithm '%s' on %s."
 )
 
 type sigAlgSunset struct {
@@ -59,12 +59,14 @@ var sunsetSigAlgs = map[x509.SignatureAlgorithm]sigAlgSunset{
 }
 
 var (
-	hostsFile   = flag.String("hosts", "", "The path to the file containing a list of hosts to check.")
-	warnYears   = flag.Int("years", 0, "Warn if the certificate will expire within this many years.")
-	warnMonths  = flag.Int("months", 0, "Warn if the certificate will expire within this many months.")
-	warnDays    = flag.Int("days", 0, "Warn if the certificate will expire within this many days.")
-	checkSigAlg = flag.Bool("check-sig-alg", true, "Verify that non-root certificates are using a good signature algorithm.")
-	concurrency = flag.Int("concurrency", defaultConcurrency, "Maximum number of hosts to check at once.")
+	hostsFile    = flag.String("hosts", "", "The path to the file containing a list of hosts to check.")
+	warnYears    = flag.Int("years", 0, "Warn if the certificate will expire within this many years.")
+	warnMonths   = flag.Int("months", 0, "Warn if the certificate will expire within this many months.")
+	warnDays     = flag.Int("days", 0, "Warn if the certificate will expire within this many days.")
+	checkSigAlg  = flag.Bool("check-sig-alg", true, "Verify that non-root certificates are using a good signature algorithm.")
+	concurrency  = flag.Int("concurrency", defaultConcurrency, "Maximum number of hosts to check at once.")
+	outPutToFile = flag.Bool("output", false, "Output results to csv")        // create output file results.csv for results
+	serveFile    = flag.Bool("serve", false, "Serve output csv on port 8080") // create outputfile and serve results.csv on port 8080
 )
 
 type certErrors struct {
@@ -79,6 +81,7 @@ type hostResult struct {
 }
 
 func main() {
+
 	flag.Parse()
 
 	if len(*hostsFile) == 0 {
@@ -100,7 +103,20 @@ func main() {
 	if *concurrency < 0 {
 		*concurrency = defaultConcurrency
 	}
+	if *outPutToFile {
+		changeToCSV()
+		// create output file for results, the writing occurs in processHosts
+		createOutPutFile()
+	}
+	if *serveFile {
+		*outPutToFile = true // set this so that writing occurs in processHosts
+		changeToCSV()
+		createOutPutFile()
+		processHosts()
+		serveHTTP()
+	}
 
+	//check hosts
 	processHosts()
 }
 
@@ -126,12 +142,17 @@ func processHosts() {
 
 	for r := range results {
 		if r.err != nil {
-			log.Printf("%s: %v\n", r.host, r.err)
+			fmt.Printf("%s: %v", r.host, r.err)
 			continue
 		}
+		fmt.Println(columnNames)
 		for _, cert := range r.certs {
 			for _, err := range cert.errs {
-				log.Println(err)
+				fmt.Println(err)
+				// write output file
+				if *outPutToFile {
+					outPutFile(err)
+				}
 			}
 		}
 	}
@@ -198,16 +219,16 @@ func checkHost(host string) (result hostResult) {
 			if timeNow.AddDate(*warnYears, *warnMonths, *warnDays).After(cert.NotAfter) {
 				expiresIn := int64(cert.NotAfter.Sub(timeNow).Hours())
 				if expiresIn <= 48 {
-					cErrs = append(cErrs, fmt.Errorf(errExpiringShortly, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn))
+					cErrs = append(cErrs, fmt.Errorf(errExpiringShortly, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn, cert.NotAfter))
 				} else {
-					cErrs = append(cErrs, fmt.Errorf(errExpiringSoon, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn/24))
+					cErrs = append(cErrs, fmt.Errorf(errExpiringSoon, host, cert.Subject.CommonName, cert.SerialNumber, expiresIn/24, cert.NotAfter))
 				}
 			}
 
 			// Check the signature algorithm, ignoring the root certificate.
 			if alg, exists := sunsetSigAlgs[cert.SignatureAlgorithm]; *checkSigAlg && exists && certNum != len(chain)-1 {
 				if cert.NotAfter.Equal(alg.sunsetsAt) || cert.NotAfter.After(alg.sunsetsAt) {
-					cErrs = append(cErrs, fmt.Errorf(errSunsetAlg, host, cert.Subject.CommonName, cert.SerialNumber, alg.name))
+					cErrs = append(cErrs, fmt.Errorf(errSunsetAlg, host, cert.Subject.CommonName, cert.NotAfter, alg.name, cert.NotAfter))
 				}
 			}
 
@@ -219,4 +240,11 @@ func checkHost(host string) (result hostResult) {
 	}
 
 	return
+}
+
+func changeToCSV() {
+	columnNames = "hostname, Common Name, S/N, time to expire, expiration date"
+	errExpiringShortly = "%s,  ** '%s', (S/N %X), %d hours **, %s"
+	errExpiringSoon = "%s, '%s', (S/N %X), %d days, %s"
+	errSunsetAlg = "%s, '%s', (S/N %X), expires after the sunset date for its signature algorithm '%s'., %s"
 }

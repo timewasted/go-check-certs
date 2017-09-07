@@ -1,0 +1,11 @@
+{
+	"version": 0,
+	"dependencies": [
+		{
+			"importpath": "github.com/certifi/gocertifi",
+			"repository": "https://github.com/certifi/gocertifi",
+			"revision": "3fd9e1adb12b72d2f3f82191d49be9b93c69f67c",
+			"branch": "master"
+		}
+	]
+}

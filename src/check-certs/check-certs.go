@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/certifi/gocertifi"
 )
 
 const defaultConcurrency = 8
@@ -177,7 +179,23 @@ func checkHost(host string) (result hostResult) {
 		host:  host,
 		certs: []certErrors{},
 	}
-	conn, err := tls.Dial("tcp", host, nil)
+
+	// Load the cacerts for trusted authorities
+	cert_pool, err := gocertifi.CACerts()
+
+	rootCAs, err := ioutil.ReadFile("rootCAs")
+
+	if err != nil {
+		log.Printf("Couldn't load file %v", err)
+		return
+	}
+
+	// Load the private root certificates (if any)
+	cert_pool.AppendCertsFromPEM(rootCAs)
+
+	config := tls.Config{RootCAs: cert_pool}
+
+	conn, err := tls.Dial("tcp", host, &config)
 	if err != nil {
 		result.err = err
 		return

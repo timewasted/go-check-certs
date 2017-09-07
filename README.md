@@ -17,7 +17,6 @@ The hosts file is simply a single `hostname:port` per line. Empty lines or lines
 Current limitations:
 --------------------
 
-* This uses the host's root CA set to check the validity of certificates.  This means that it is not able to validate things like self-signed certificates.
 * A certificate must be valid for it to be checked.
 
 License:
@@ -27,13 +26,13 @@ Copyright (c) 2013, Ryan Rogers
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met: 
+modification, are permitted provided that the following conditions are met:
 
 1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer. 
+   list of conditions and the following disclaimer.
 2. Redistributions in binary form must reproduce the above copyright notice,
    this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution. 
+   and/or other materials provided with the distribution.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED

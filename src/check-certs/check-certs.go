@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/certifi/gocertifi"
 )
 
 const defaultConcurrency = 8
@@ -65,6 +67,8 @@ var (
 	warnDays    = flag.Int("days", 0, "Warn if the certificate will expire within this many days.")
 	checkSigAlg = flag.Bool("check-sig-alg", true, "Verify that non-root certificates are using a good signature algorithm.")
 	concurrency = flag.Int("concurrency", defaultConcurrency, "Maximum number of hosts to check at once.")
+	rootCAsfile = flag.String("rootca", "", "The path to the file containing addtional RootCAs to include.")
+	config      = tls.Config{}
 )
 
 type certErrors struct {
@@ -79,11 +83,32 @@ type hostResult struct {
 }
 
 func main() {
+
+	// Load the Root CA's from trusted 3rd party Vendors
+	certPool, err := gocertifi.CACerts()
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	flag.Parse()
 
 	if len(*hostsFile) == 0 {
 		flag.Usage()
 		return
+	}
+
+	if len(*rootCAsfile) == 0 {
+		config = tls.Config{RootCAs: certPool}
+	} else {
+		rootCAs, err := ioutil.ReadFile(*rootCAsfile)
+
+		if err != nil {
+			log.Printf("Couldn't load file %v", err)
+			return
+		}
+		certPool.AppendCertsFromPEM(rootCAs)
+		config = tls.Config{RootCAs: certPool}
 	}
 	if *warnYears < 0 {
 		*warnYears = 0
@@ -177,7 +202,8 @@ func checkHost(host string) (result hostResult) {
 		host:  host,
 		certs: []certErrors{},
 	}
-	conn, err := tls.Dial("tcp", host, nil)
+
+	conn, err := tls.Dial("tcp", host, &config)
 	if err != nil {
 		result.err = err
 		return
